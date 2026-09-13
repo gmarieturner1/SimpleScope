@@ -498,7 +498,7 @@ function esc(s) {
 }
 
 function makeLaborRoom() {
-  return { id: "labor-box", name: "Labor & Whole-Job Items", isLabor: true, items: [], naItems: [], notes: "" };
+  return { id: "labor-box", name: "Labor & Whole-Job Items", isLabor: true, items: [], naItems: [], notes: "", photos: [] };
 }
 
 function makeJob(name, jobType) {
@@ -524,6 +524,7 @@ function ensureLaborRoom(job) {
 function normalizeRoom(room) {
   if (!room.naItems) room.naItems = [];
   if (!room.items) room.items = [];
+  if (!room.photos) room.photos = [];
   // Legacy rows stored a single "isNA" flag directly on an item entry
   // instead of in room.naItems — migrate those out.
   room.items = room.items.filter((it) => {
@@ -689,7 +690,7 @@ function addRoom() {
   const type = typeSelect.value;
   const label = labelInput.value.trim() || type;
   const job = getCurrentJob();
-  const room = { id: uid(), name: label, type, items: [], naItems: [], notes: "" };
+  const room = { id: uid(), name: label, type, items: [], naItems: [], notes: "", photos: [] };
   job.rooms.push(room);
   state.openRoomId = room.id;
   labelInput.value = "";
@@ -760,6 +761,57 @@ function updateRoomNotes(roomId, value) {
   const room = job.rooms.find((r) => r.id === roomId);
   room.notes = value;
   scheduleSave(job.id);
+}
+
+// Photos are compressed client-side before saving — this keeps them in
+// the same free database as everything else (no separate file-storage
+// service or billing account needed), at the cost of a size ceiling for
+// very large photo libraries per job.
+function handlePhotoSelected(roomId, inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 1000;
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w >= h) { h = Math.round((h * maxDim) / w); w = maxDim; }
+        else { w = Math.round((w * maxDim) / h); h = maxDim; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+      addPhotoToRoom(roomId, dataUrl);
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+  inputEl.value = ""; // allow re-selecting the same file later
+}
+
+function addPhotoToRoom(roomId, dataUrl) {
+  const job = getCurrentJob();
+  const room = job.rooms.find((r) => r.id === roomId);
+  room.photos.push({ id: uid(), dataUrl, addedAt: new Date().toISOString() });
+  scheduleSave(job.id);
+  render();
+}
+
+function removePhoto(roomId, photoId) {
+  const job = getCurrentJob();
+  const room = job.rooms.find((r) => r.id === roomId);
+  room.photos = room.photos.filter((p) => p.id !== photoId);
+  scheduleSave(job.id);
+  render();
+}
+
+function viewPhoto(dataUrl) {
+  const w = window.open();
+  if (w) w.document.write(`<title>Photo</title><body style="margin:0;background:#111;"><img src="${dataUrl}" style="max-width:100%;display:block;margin:0 auto;"></body>`);
 }
 
 function updateItemQty(roomId, instanceId, qty) {
@@ -1166,6 +1218,23 @@ function renderWalkthrough(job) {
       ? `<div style="margin-top:4px;font-size:12px;color:var(--ink-soft);font-style:italic;">N/A: ${room.naItems.map((naId) => { const ci = catalogItem(naId); return esc(ci ? ci.name : naId); }).join(", ")}</div>`
       : "";
 
+    const photosHtml = `<div class="no-print" style="margin-top:14px;">
+      <div class="row between" style="margin-bottom:6px;">
+        <label style="font-size:11.5px;font-weight:600;color:var(--ink-soft);">Photos</label>
+        <button type="button" class="btn-ghost" style="padding:3px 10px;font-size:11px;" onclick="document.getElementById('photo-input-${room.id}').click()">+ Add photo</button>
+      </div>
+      <input type="file" accept="image/*" capture="environment" id="photo-input-${room.id}" style="display:none" onchange="handlePhotoSelected('${room.id}', this)" />
+      ${room.photos.length === 0 ? `<div style="font-size:12px;color:var(--ink-soft);">No photos yet.</div>` : `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${room.photos.map((p) => `
+          <div style="position:relative;width:72px;height:72px;">
+            <img src="${p.dataUrl}" onclick="viewPhoto('${p.dataUrl}')" style="width:72px;height:72px;object-fit:cover;border:1px solid var(--line);cursor:pointer;" />
+            <button type="button" onclick="removePhoto('${room.id}','${p.id}')"
+              style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--danger);color:white;border:none;font-size:11px;line-height:1;padding:0;">×</button>
+          </div>`).join("")}
+      </div>`}
+    </div>`;
+
     const notesHtml = `<div class="no-print" style="margin-top:14px;">
       <label style="font-size:11.5px;font-weight:600;color:var(--ink-soft);display:block;margin-bottom:4px;">Notes</label>
       <textarea id="room-notes-${room.id}" oninput="updateRoomNotes('${room.id}', this.value)"
@@ -1186,7 +1255,7 @@ function renderWalkthrough(job) {
             <span style="font-size:12px;">${isOpen ? "&#9650;" : "&#9660;"}</span>
           </div>
         </div>
-        ${isOpen ? `<div class="room-body">${itemsHtml}${customFormHtml}${checkedList}${naList}${notesHtml}</div>` : ""}
+        ${isOpen ? `<div class="room-body">${itemsHtml}${customFormHtml}${checkedList}${naList}${photosHtml}${notesHtml}</div>` : ""}
       </div>
     `;
   }).join("");
